@@ -1,0 +1,162 @@
+name: Create Hetzner Dev Server
+
+on:
+  workflow_dispatch:
+    inputs:
+      username:
+        description: "Admin username for the server"
+        required: true
+        type: string
+      full_name:
+        description: "Full name for the admin user (e.g. Alice Smith)"
+        required: false
+        type: string
+        default: ""
+      password:
+        description: "Admin user password (min 10 chars)"
+        required: true
+        type: string
+      region:
+        description: "Hetzner region (hel1, nbg1, fsn1, ash, hil)"
+        required: true
+        type: string
+        default: hel1
+      server_type:
+        description: "Server type (cax11, cpx21, cax21, cpx31)"
+        required: true
+        type: string
+        default: cax11
+      server_name_prefix:
+        description: "Server name prefix — full name: {prefix}-{region}-{username}"
+        required: true
+        type: string
+        default: ubuntu-4gb
+      work_email:
+        description: "Requester work email — server details will be sent here"
+        required: false
+        type: string
+
+jobs:
+  terraform:
+    name: Provision Server
+    runs-on: ubuntu-latest
+
+    env:
+      TF_VAR_hcloud_token:        ${{ secrets.HCLOUD_TOKEN }}
+      TF_VAR_ssh_public_key:      ${{ secrets.SSH_PUBLIC_KEY }}
+      TF_VAR_username:            ${{ inputs.username }}
+      TF_VAR_full_name:           ${{ inputs.full_name }}
+      TF_VAR_password:            ${{ inputs.password }}
+      TF_VAR_region:              ${{ inputs.region }}
+      TF_VAR_server_type:         ${{ inputs.server_type }}
+      TF_VAR_server_name_prefix:  ${{ inputs.server_name_prefix }}
+      TF_VAR_image:               "ubuntu-24.04"
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: hashicorp/setup-terraform@v3
+
+      - name: Write Backend Config
+        run: |
+          cat > backend.hcl << 'EOF'
+          bucket     = "${{ secrets.TF_STATE_BUCKET }}"
+          key        = "hetzner-servers/${{ inputs.server_name_prefix }}-${{ inputs.region }}-${{ inputs.username }}/terraform.tfstate"
+          region     = "${{ secrets.TF_STATE_REGION }}"
+          access_key = "${{ secrets.HZ_S3_ACCESS_KEY }}"
+          secret_key = "${{ secrets.HZ_S3_SECRET_KEY }}"
+          endpoints = {
+            s3 = "${{ secrets.TF_STATE_ENDPOINT }}"
+          }
+          skip_credentials_validation = true
+          skip_metadata_api_check     = true
+          skip_region_validation      = true
+          skip_requesting_account_id  = true
+          force_path_style            = true
+          EOF
+
+      - name: Terraform Init
+        run: terraform init -backend-config=backend.hcl
+
+      - name: Terraform Plan
+        run: terraform plan -out=tfplan
+
+      - name: Terraform Apply
+        run: terraform apply -auto-approve tfplan
+
+      - name: Show Outputs
+        run: terraform output
+
+      - name: Wait for SSH and Snapshot Logs
+        continue-on-error: true
+        run: |
+          SERVER_IP=$(terraform output -raw ipv4_address)
+          echo "Server IP: $SERVER_IP"
+
+          mkdir -p ~/.ssh
+          echo "${{ secrets.SSH_PRIVATE_KEY }}" > ~/.ssh/ops_key
+          chmod 600 ~/.ssh/ops_key
+
+          echo "Waiting for SSH (up to 2 minutes)..."
+          for i in $(seq 1 24); do
+            if nc -z -w5 "$SERVER_IP" 22 2>/dev/null; then
+              echo "SSH is up"
+              break
+            fi
+            echo "Attempt $i/24 — retrying in 5s..."
+            sleep 5
+          done
+          sleep 5
+
+          SSH_CMD="ssh -i ~/.ssh/ops_key -o StrictHostKeyChecking=no root@$SERVER_IP"
+
+          echo ""
+          echo "===== PROVISION LOG (snapshot) ====="
+          $SSH_CMD 'cat /var/log/provision.log 2>/dev/null || cat /var/log/cloud-init-output.log 2>/dev/null || echo "Log not yet available"'
+
+          echo ""
+          echo "===== SHADOW CHECK ====="
+          $SSH_CMD 'grep "^${{ inputs.username }}:" /etc/shadow | cut -d: -f1-3'
+
+          echo ""
+          echo "===== SSHD CONFIG ====="
+          $SSH_CMD 'grep -ri "passwordauthentication\|pubkeyauthentication" /etc/ssh/'
+
+          echo ""
+          echo "Server is up. Minikube setup continues in the background."
+          echo "SSH: ssh ${{ inputs.username }}@$SERVER_IP"
+          echo "Watch logs: ssh ${{ inputs.username }}@$SERVER_IP 'tail -f /var/log/provision.log'"
+
+      - name: Send Email Notification
+        if: ${{ inputs.work_email != '' }}
+        env:
+          SENDGRID_API_KEY:   ${{ secrets.SENDGRID_API_KEY }}
+          NOTIFY_FROM_EMAIL:  ${{ secrets.NOTIFY_FROM_EMAIL }}
+          NOTIFY_FROM_NAME:   ${{ secrets.NOTIFY_FROM_NAME }}
+        run: |
+          SERVER_IP=$(terraform output -raw ipv4_address)
+          EMAIL="${{ inputs.work_email }}"
+          USERNAME="${{ inputs.username }}"
+          SERVER_NAME="${{ inputs.server_name_prefix }}-${{ inputs.region }}-${{ inputs.username }}"
+          FIRST_NAME=$(echo "$EMAIL" | cut -d@ -f1 | cut -d. -f1 | sed 's/./\u&/')
+          TEAM_NAME="${NOTIFY_FROM_NAME:-DevOps}"
+
+          SUBJECT="Your dev server is ready — ${SERVER_NAME}"
+
+          cat > /tmp/email_body.html << HTMLEOF
+          <p>Hi ${FIRST_NAME},</p>
+          <p>Your Hetzner dev server <strong>${SERVER_NAME}</strong> is provisioned and ready.</p>
+          <table border="1" cellpadding="8" cellspacing="0" style="border-collapse:collapse;font-family:monospace">
+            <tr><th>Detail</th><th>Value</th></tr>
+            <tr><td>IP Address</td><td>${SERVER_IP}</td></tr>
+            <tr><td>SSH Command</td><td>ssh ${USERNAME}@${SERVER_IP}</td></tr>
+            <tr><td>Username</td><td>${USERNAME}</td></tr>
+            <tr><td>Password</td><td>The password you set when requesting the server</td></tr>
+          </table>
+          <p><strong>Note:</strong> Kubernetes (Minikube) finishes setting up in the background ~5 minutes after first boot.</p>
+          <p>Watch setup progress on the server:<br><code>tail -f /var/log/provision.log</code></p>
+          <p>Thanks,<br>${TEAM_NAME}</p>
+          HTMLEOF
+
+          BODY=$(python3 -c "import json; print(json.dumps(open('/tmp/email_body.html').read()))")
+          bash scripts/send-email.sh "$EMAIL" "$SUBJECT" "$BODY"

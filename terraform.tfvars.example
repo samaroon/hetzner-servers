@@ -1,0 +1,13 @@
+# Copy to terraform.tfvars and fill in values for local use.
+# Never commit terraform.tfvars — it is gitignored.
+
+hcloud_token   = "your-hetzner-api-token"
+ssh_public_key = "ssh-ed25519 AAAA... you@host"
+
+username           = "alice"
+full_name          = "Alice Smith"
+password           = "ChangeMe123!"
+region             = "hel1"
+server_type        = "cax11"
+server_name_prefix = "ubuntu-4gb"
+image              = "ubuntu-24.04"

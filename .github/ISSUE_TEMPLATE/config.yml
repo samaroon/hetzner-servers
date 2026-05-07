@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Hetzner Cloud docs
+    url: https://docs.hetzner.com/cloud
+    about: Hetzner Cloud API, server types, and regions reference
+  - name: Terraform Hetzner provider docs
+    url: https://registry.terraform.io/providers/hetznercloud/hcloud/latest/docs
+    about: hcloud Terraform provider reference

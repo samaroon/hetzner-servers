@@ -1,0 +1,275 @@
+#cloud-config
+# Target : Ubuntu 24.04 on cax11 (ARM64 / Ampere)
+# Logs   : /var/log/cloud-init-output.log  |  /var/log/provision.log
+
+# ── Users ──────────────────────────────────────────────────────────────────────
+users:
+  - name: root
+    ssh_authorized_keys:
+      - ${ssh_public_key}
+
+  - name: ${username}
+    gecos: "${full_name}"
+    groups: [sudo, docker]
+    shell: /bin/bash
+    sudo: ALL=(ALL) NOPASSWD:ALL
+    lock_passwd: false
+    ssh_authorized_keys:
+      - ${ssh_public_key}
+
+# ── Auth ───────────────────────────────────────────────────────────────────────
+ssh_pwauth: true
+chpasswd:
+  expire: false
+  users:
+    - name: ${username}
+      password: ${password}
+      type: text
+
+# ── APT ────────────────────────────────────────────────────────────────────────
+package_update: true
+package_upgrade: true
+
+packages:
+  # Base utilities
+  - git
+  - curl
+  - wget
+  - unzip
+  - jq
+  - vim
+  - htop
+  - tmux
+  # Network / debug
+  - net-tools
+  - dnsutils
+  - tcpdump
+  - socat
+  - conntrack
+  # Docker prereqs
+  - apt-transport-https
+  - ca-certificates
+  - gnupg
+  - lsb-release
+  # Shell quality-of-life
+  - fzf
+  - bat
+
+# ── Files ──────────────────────────────────────────────────────────────────────
+write_files:
+  - path: /opt/provision/setup.sh
+    permissions: '0755'
+    owner: root:root
+    content: |
+      #!/usr/bin/env bash
+      set -euo pipefail
+
+      LOGFILE="/var/log/provision.log"
+      exec > >(tee -a "$LOGFILE") 2>&1
+
+      USERNAME="${username}"
+
+      # ── Detect architecture ──────────────────────────────────────────────────
+      # arm64 on cax* (Ampere) | amd64 on cx* (Intel/AMD)
+      ARCH=$(dpkg --print-architecture)
+      log() { echo "[$(date '+%Y-%m-%d %H:%M:%S')] [$ARCH] $*"; }
+
+      log "=== Provisioning started — user: $USERNAME | arch: $ARCH ==="
+
+      export DEBIAN_FRONTEND=noninteractive
+
+      # ── Arch mappings ────────────────────────────────────────────────────────
+      case "$ARCH" in
+        arm64) KUBECTL_ARCH="arm64" ;;
+        amd64) KUBECTL_ARCH="amd64" ;;
+        *)     log "ERROR: Unsupported arch: $ARCH"; exit 1 ;;
+      esac
+
+      # ── Pinned versions ──────────────────────────────────────────────────────
+      # Pin these to avoid GitHub API rate limits when spinning up multiple servers.
+      KUBECTL_VERSION="v1.30.0"
+      MINIKUBE_VERSION="v1.33.1"
+      HELM_VERSION="v3.15.2"
+      K9S_VERSION="v0.32.5"
+      KUBECTX_VERSION="v0.9.5"
+      STERN_VERSION="v1.30.0"
+      YQ_VERSION="v4.44.2"
+      DIVE_VERSION="v0.12.0"
+
+      # ── Sudoers ──────────────────────────────────────────────────────────────
+      usermod -aG sudo "$USERNAME" 2>/dev/null || true
+      echo "$USERNAME ALL=(ALL) NOPASSWD:ALL" > /etc/sudoers.d/$USERNAME
+      chmod 0440 /etc/sudoers.d/$USERNAME
+      log "Sudoers configured for $USERNAME"
+
+      # ════════════════════════════════════════════════════════════════════════
+      # SECTION 1 — Docker
+      # ════════════════════════════════════════════════════════════════════════
+      log "--- Installing Docker ---"
+      install -m 0755 -d /etc/apt/keyrings
+      curl -fsSL https://download.docker.com/linux/ubuntu/gpg \
+        | gpg --dearmor -o /etc/apt/keyrings/docker.gpg
+      chmod a+r /etc/apt/keyrings/docker.gpg
+
+      echo "deb [arch=$ARCH signed-by=/etc/apt/keyrings/docker.gpg] \
+        https://download.docker.com/linux/ubuntu \
+        $(. /etc/os-release && echo "$VERSION_CODENAME") stable" \
+        > /etc/apt/sources.list.d/docker.list
+
+      apt-get update -qq
+      apt-get install -y \
+        docker-ce \
+        docker-ce-cli \
+        containerd.io \
+        docker-buildx-plugin \
+        docker-compose-plugin
+
+      systemctl enable --now docker
+      usermod -aG docker "$USERNAME"
+      log "Docker: $(docker --version)"
+
+      # ════════════════════════════════════════════════════════════════════════
+      # SECTION 2 — Kubernetes toolchain
+      # ════════════════════════════════════════════════════════════════════════
+
+      # ── kubectl ──────────────────────────────────────────────────────────────
+      log "--- Installing kubectl $${KUBECTL_VERSION} ($${KUBECTL_ARCH}) ---"
+      curl -fsSL "https://dl.k8s.io/release/$${KUBECTL_VERSION}/bin/linux/$${KUBECTL_ARCH}/kubectl" \
+        -o /usr/local/bin/kubectl
+      chmod +x /usr/local/bin/kubectl
+      log "kubectl: $(kubectl version --client 2>/dev/null | head -1)"
+
+      # ── Minikube ─────────────────────────────────────────────────────────────
+      log "--- Installing Minikube $${MINIKUBE_VERSION} ($${KUBECTL_ARCH}) ---"
+      curl -fsSL "https://storage.googleapis.com/minikube/releases/$${MINIKUBE_VERSION}/minikube-linux-$${KUBECTL_ARCH}" \
+        -o /usr/local/bin/minikube
+      chmod +x /usr/local/bin/minikube
+      log "Minikube: $(minikube version --short)"
+
+      # ── Helm ─────────────────────────────────────────────────────────────────
+      log "--- Installing Helm $${HELM_VERSION} ---"
+      curl -fsSL "https://get.helm.sh/helm-$${HELM_VERSION}-linux-$${KUBECTL_ARCH}.tar.gz" \
+        | tar -xz -C /usr/local/bin --strip-components=1 "linux-$${KUBECTL_ARCH}/helm"
+      log "Helm: $(helm version --short)"
+
+      # ── k9s ──────────────────────────────────────────────────────────────────
+      log "--- Installing k9s $${K9S_VERSION} ---"
+      curl -fsSL "https://github.com/derailed/k9s/releases/download/$${K9S_VERSION}/k9s_Linux_$${KUBECTL_ARCH}.tar.gz" \
+        | tar -xz -C /usr/local/bin k9s
+      log "k9s: $(k9s version)"
+
+      # ── kubectx + kubens ──────────────────────────────────────────────────────
+      log "--- Installing kubectx/kubens $${KUBECTX_VERSION} ---"
+      curl -fsSL "https://github.com/ahmetb/kubectx/releases/download/$${KUBECTX_VERSION}/kubectx_$${KUBECTX_VERSION}_linux_$${KUBECTL_ARCH}.tar.gz" \
+        | tar -xz -C /usr/local/bin kubectx
+      curl -fsSL "https://github.com/ahmetb/kubectx/releases/download/$${KUBECTX_VERSION}/kubens_$${KUBECTX_VERSION}_linux_$${KUBECTL_ARCH}.tar.gz" \
+        | tar -xz -C /usr/local/bin kubens
+      log "kubectx: $(kubectx --version 2>/dev/null || echo $${KUBECTX_VERSION})"
+
+      # ── stern ─────────────────────────────────────────────────────────────────
+      log "--- Installing stern $${STERN_VERSION} ---"
+      curl -fsSL "https://github.com/stern/stern/releases/download/$${STERN_VERSION}/stern_$${STERN_VERSION#v}_linux_$${KUBECTL_ARCH}.tar.gz" \
+        | tar -xz -C /usr/local/bin stern
+      log "stern: $(stern --version)"
+
+      # ── yq ────────────────────────────────────────────────────────────────────
+      log "--- Installing yq $${YQ_VERSION} ---"
+      curl -fsSL "https://github.com/mikefarah/yq/releases/download/$${YQ_VERSION}/yq_linux_$${KUBECTL_ARCH}" \
+        -o /usr/local/bin/yq
+      chmod +x /usr/local/bin/yq
+      log "yq: $(yq --version)"
+
+      # ── dive ──────────────────────────────────────────────────────────────────
+      log "--- Installing dive $${DIVE_VERSION} ---"
+      curl -fsSL "https://github.com/wagoodman/dive/releases/download/$${DIVE_VERSION}/dive_$${DIVE_VERSION#v}_linux_$${KUBECTL_ARCH}.tar.gz" \
+        | tar -xz -C /usr/local/bin dive
+      log "dive: $(dive --version)"
+
+      # ════════════════════════════════════════════════════════════════════════
+      # SECTION 3 — Start Minikube cluster
+      # ════════════════════════════════════════════════════════════════════════
+      log "--- Starting Minikube as $USERNAME (driver=docker) ---"
+      sudo -u "$USERNAME" bash -c "
+        export HOME=/home/$USERNAME
+        export MINIKUBE_HOME=/home/$USERNAME/.minikube
+
+        minikube start \
+          --driver=docker \
+          --cpus=2 \
+          --memory=2800mb \
+          --disk-size=15gb \
+          --kubernetes-version=$${KUBECTL_VERSION} \
+          --embed-certs \
+          --wait=all
+      "
+
+      log "Minikube status:"
+      sudo -u "$USERNAME" bash -c "
+        export HOME=/home/$USERNAME
+        minikube status
+        echo '--- Nodes ---'
+        kubectl get nodes -o wide
+        echo '--- System Pods ---'
+        kubectl get pods -n kube-system
+      "
+
+      # ════════════════════════════════════════════════════════════════════════
+      # SECTION 4 — Shell config
+      # ════════════════════════════════════════════════════════════════════════
+      cat >> /home/$USERNAME/.bashrc << 'BASHRC'
+
+      # ── kubectl ──────────────────────────────────────────────────────────────
+      alias k='kubectl'
+      alias kgp='kubectl get pods -A'
+      alias kgn='kubectl get nodes -o wide'
+      alias kgs='kubectl get svc -A'
+      alias kdp='kubectl describe pod'
+
+      # ── Minikube ─────────────────────────────────────────────────────────────
+      alias mk='minikube'
+      alias mkd='minikube dashboard --url'
+      alias mks='minikube status'
+
+      # ── Docker ───────────────────────────────────────────────────────────────
+      alias dps='docker ps --format "table {{.Names}}\t{{.Status}}\t{{.Ports}}"'
+      alias dlogs='docker logs -f'
+
+      # ── Shell ─────────────────────────────────────────────────────────────────
+      alias ll='ls -lah --color=auto'
+      alias cat='batcat --paging=never'   # bat installs as batcat on Ubuntu
+
+      # ── Completions ──────────────────────────────────────────────────────────
+      source <(kubectl completion bash)   2>/dev/null
+      source <(minikube completion bash)  2>/dev/null
+      source <(helm completion bash)      2>/dev/null
+      source <(stern --completion bash)   2>/dev/null
+      complete -o default -F __start_kubectl k
+      BASHRC
+
+      chown "$USERNAME:$USERNAME" /home/$USERNAME/.bashrc
+
+      # ════════════════════════════════════════════════════════════════════════
+      # SECTION 5 — Summary
+      # ════════════════════════════════════════════════════════════════════════
+      PUBLIC_IP=$(curl -fsSL ifconfig.me 2>/dev/null || echo "unknown")
+
+      log "=== Provisioning complete ==="
+      log "IP         : $PUBLIC_IP"
+      log "SSH        : ssh $USERNAME@$PUBLIC_IP"
+      log "git        : $(git --version)"
+      log "docker     : $(docker --version)"
+      log "kubectl    : $(kubectl version --client --short 2>/dev/null || echo $${KUBECTL_VERSION})"
+      log "minikube   : $(minikube version --short)"
+      log "helm       : $(helm version --short)"
+      log "k9s        : $(k9s version)"
+      log "stern      : $(stern --version)"
+      log "yq         : $(yq --version)"
+      log "dive       : $(dive --version)"
+      log "Full log   : $LOGFILE"
+
+# ── Boot commands ──────────────────────────────────────────────────────────────
+runcmd:
+  - [bash, /opt/provision/setup.sh]
+
+final_message: |
+  Provisioning complete in $UPTIME seconds. Check /var/log/provision.log for details.

@@ -1,0 +1,214 @@
+apiVersion: scaffolder.backstage.io/v1beta3
+kind: Template
+
+metadata:
+  name: hetzner-dev-server-create
+  title: "Create Hetzner Dev Server"
+  description: "Provision a Kubernetes-ready Ubuntu 24.04 dev server on Hetzner Cloud (Docker + Minikube + Helm + k9s)"
+  tags:
+    - infrastructure
+    - kubernetes
+    - hetzner
+
+spec:
+  owner: devops
+  type: infrastructure
+
+  parameters:
+    - title: Identity
+      required:
+        - username
+        - full_name
+        - password
+      properties:
+        username:
+          title: Admin Username
+          type: string
+          description: "Linux user account to create (lowercase, no spaces — e.g. alice)"
+          pattern: "^[a-z][a-z0-9_-]{1,31}$"
+
+        full_name:
+          title: Full Name
+          type: string
+          description: "Your full name — used in the GECOS field (e.g. Alice Smith)"
+
+        password:
+          title: Admin Password
+          type: string
+          ui:field: Secret
+          description: "Minimum 10 characters (e.g. Mercury789#)"
+          minLength: 10
+
+        work_email:
+          title: Work Email (optional)
+          type: string
+          description: "Server IP and SSH command will be emailed here once ready"
+
+    - title: Server Configuration
+      required:
+        - region
+        - server_type
+        - server_name_prefix
+      properties:
+        region:
+          title: Region
+          type: string
+          default: hel1
+          enum:
+            - hel1
+            - nbg1
+            - fsn1
+            - ash
+            - hil
+          enumNames:
+            - "Helsinki, EU (hel1)"
+            - "Nuremberg, EU (nbg1)"
+            - "Falkenstein, EU (fsn1)"
+            - "Ashburn, US (ash)"
+            - "Hillsboro, US (hil)"
+
+        server_type:
+          title: Server Type
+          type: string
+          default: cax11
+          enum:
+            - cax11
+            - cpx21
+            - cax21
+            - cpx31
+          enumNames:
+            - "ARM64  2vCPU / 4GB RAM (cax11) — cheapest, recommended"
+            - "x86    3vCPU / 4GB RAM (cpx21)"
+            - "ARM64  4vCPU / 8GB RAM (cax21)"
+            - "x86    4vCPU / 8GB RAM (cpx31)"
+          ui:widget: radio
+
+        server_name_prefix:
+          title: Server Name Prefix
+          type: string
+          default: ubuntu-4gb
+          description: "Full server name will be: {prefix}-{region}-{username}"
+
+  steps:
+    - id: trigger-create
+      name: Trigger Server Provisioning
+      action: github:actions:dispatch
+      input:
+        repoUrl: github.com?owner=YOUR_GITHUB_ORG&repo=YOUR_REPO_NAME
+        workflowId: server-up.yaml
+        branchOrTagName: main
+        workflowInputs:
+          username:            ${{ parameters.username }}
+          full_name:           ${{ parameters.full_name }}
+          password:            ${{ parameters.password }}
+          region:              ${{ parameters.region }}
+          server_type:         ${{ parameters.server_type }}
+          server_name_prefix:  ${{ parameters.server_name_prefix }}
+          work_email:          ${{ parameters.work_email }}
+
+  output:
+    text:
+      - title: Server Provisioning Started
+        content: |
+          ## Your server is being provisioned
+
+          **Server name:** `${{ parameters.server_name_prefix }}-${{ parameters.region }}-${{ parameters.username }}`
+
+          The GitHub Actions workflow is running — the server IP and SSH command will appear in the run logs and be emailed to you if you provided an address.
+
+          **SSH command** (once ready):
+          ```
+          ssh ${{ parameters.username }}@<ip>
+          ```
+
+          Minikube finishes setting up ~5 minutes after the server boots.
+          Watch progress: `tail -f /var/log/provision.log`
+
+    links:
+      - title: View Provisioning Run
+        url: https://github.com/YOUR_GITHUB_ORG/YOUR_REPO_NAME/actions/workflows/server-up.yaml
+
+---
+apiVersion: scaffolder.backstage.io/v1beta3
+kind: Template
+
+metadata:
+  name: hetzner-dev-server-destroy
+  title: "Destroy Hetzner Dev Server"
+  description: "Permanently destroy a Hetzner dev server and stop billing"
+  tags:
+    - infrastructure
+    - hetzner
+
+spec:
+  owner: devops
+  type: infrastructure
+
+  parameters:
+    - title: Server to Destroy
+      required:
+        - username
+        - region
+        - server_name_prefix
+      properties:
+        username:
+          title: Admin Username
+          type: string
+          description: "Must exactly match what was used when the server was created"
+
+        region:
+          title: Region
+          type: string
+          default: hel1
+          enum:
+            - hel1
+            - nbg1
+            - fsn1
+            - ash
+            - hil
+          enumNames:
+            - "Helsinki, EU (hel1)"
+            - "Nuremberg, EU (nbg1)"
+            - "Falkenstein, EU (fsn1)"
+            - "Ashburn, US (ash)"
+            - "Hillsboro, US (hil)"
+
+        server_name_prefix:
+          title: Server Name Prefix
+          type: string
+          default: ubuntu-4gb
+          description: "Must match what was used at creation. Server: {prefix}-{region}-{username}"
+
+        work_email:
+          title: Work Email (optional)
+          type: string
+          description: "Destruction confirmation will be sent here"
+
+  steps:
+    - id: trigger-destroy
+      name: Trigger Server Destruction
+      action: github:actions:dispatch
+      input:
+        repoUrl: github.com?owner=YOUR_GITHUB_ORG&repo=YOUR_REPO_NAME
+        workflowId: server-down.yaml
+        branchOrTagName: main
+        workflowInputs:
+          username:           ${{ parameters.username }}
+          region:             ${{ parameters.region }}
+          server_name_prefix: ${{ parameters.server_name_prefix }}
+          work_email:         ${{ parameters.work_email }}
+
+  output:
+    text:
+      - title: Destruction Triggered
+        content: |
+          ## Server destruction in progress
+
+          **Server:** `${{ parameters.server_name_prefix }}-${{ parameters.region }}-${{ parameters.username }}`
+
+          The GitHub Actions workflow will destroy all resources and stop billing.
+          A confirmation email will be sent if you provided an address.
+
+    links:
+      - title: View Destroy Run
+        url: https://github.com/YOUR_GITHUB_ORG/YOUR_REPO_NAME/actions/workflows/server-down.yaml

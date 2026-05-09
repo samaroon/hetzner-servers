@@ -16,7 +16,7 @@ provider "hcloud" {
 }
 
 locals {
-  server_name = "${var.server_name_prefix}-${var.region}-${var.username}"
+  server_name = "${var.username}-${var.server_type}-${var.region}"
 }
 
 # ── SSH Key ────────────────────────────────────────────────────────────────────

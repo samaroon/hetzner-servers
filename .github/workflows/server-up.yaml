@@ -26,11 +26,11 @@ on:
         required: true
         type: string
         default: cax11
-      server_name_prefix:
-        description: "Server name prefix — full name: {prefix}-{region}-{username}"
-        required: true
+      image:
+        description: "OS image for the server (e.g. ubuntu-24.04, ubuntu-22.04)"
+        required: false
         type: string
-        default: ubuntu-4gb
+        default: ubuntu-24.04
       work_email:
         description: "Requester work email — server details will be sent here"
         required: false
@@ -42,26 +42,27 @@ jobs:
     runs-on: ubuntu-latest
 
     env:
-      TF_VAR_hcloud_token:        ${{ secrets.HCLOUD_TOKEN }}
-      TF_VAR_ssh_public_key:      ${{ secrets.SSH_PUBLIC_KEY }}
-      TF_VAR_username:            ${{ inputs.username }}
-      TF_VAR_full_name:           ${{ inputs.full_name }}
-      TF_VAR_password:            ${{ inputs.password }}
-      TF_VAR_region:              ${{ inputs.region }}
-      TF_VAR_server_type:         ${{ inputs.server_type }}
-      TF_VAR_server_name_prefix:  ${{ inputs.server_name_prefix }}
-      TF_VAR_image:               "ubuntu-24.04"
+      TF_VAR_hcloud_token:    ${{ secrets.HCLOUD_TOKEN }}
+      TF_VAR_ssh_public_key:  ${{ secrets.SSH_PUBLIC_KEY }}
+      TF_VAR_username:        ${{ inputs.username }}
+      TF_VAR_full_name:       ${{ inputs.full_name }}
+      TF_VAR_password:        ${{ inputs.password }}
+      TF_VAR_region:          ${{ inputs.region }}
+      TF_VAR_server_type:     ${{ inputs.server_type }}
+      TF_VAR_image:           ${{ inputs.image }}
 
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout
+        uses: actions/checkout@v6.0.2
 
-      - uses: hashicorp/setup-terraform@v3
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v4.0.0
 
       - name: Write Backend Config
         run: |
           cat > backend.hcl << 'EOF'
           bucket     = "${{ secrets.TF_STATE_BUCKET }}"
-          key        = "hetzner-servers/${{ inputs.server_name_prefix }}-${{ inputs.region }}-${{ inputs.username }}/terraform.tfstate"
+          key        = "servers/${{ inputs.username }}-${{ inputs.server_type }}-${{ inputs.region }}/terraform.tfstate"
           region     = "${{ secrets.TF_STATE_REGION }}"
           access_key = "${{ secrets.HZ_S3_ACCESS_KEY }}"
           secret_key = "${{ secrets.HZ_S3_SECRET_KEY }}"
@@ -137,7 +138,7 @@ jobs:
           SERVER_IP=$(terraform output -raw ipv4_address)
           EMAIL="${{ inputs.work_email }}"
           USERNAME="${{ inputs.username }}"
-          SERVER_NAME="${{ inputs.server_name_prefix }}-${{ inputs.region }}-${{ inputs.username }}"
+          SERVER_NAME="${{ inputs.username }}-${{ inputs.server_type }}-${{ inputs.region }}"
           FIRST_NAME=$(echo "$EMAIL" | cut -d@ -f1 | cut -d. -f1 | sed 's/./\u&/')
           TEAM_NAME="${NOTIFY_FROM_NAME:-DevOps}"
 

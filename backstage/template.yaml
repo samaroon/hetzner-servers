@@ -48,7 +48,6 @@ spec:
       required:
         - region
         - server_type
-        - server_name_prefix
       properties:
         region:
           title: Region
@@ -83,11 +82,16 @@ spec:
             - "x86    4vCPU / 8GB RAM (cpx31)"
           ui:widget: radio
 
-        server_name_prefix:
-          title: Server Name Prefix
+        image:
+          title: OS Image
           type: string
-          default: ubuntu-4gb
-          description: "Full server name will be: {prefix}-{region}-{username}"
+          default: ubuntu-24.04
+          enum:
+            - ubuntu-24.04
+            - ubuntu-22.04
+          enumNames:
+            - "Ubuntu 24.04 LTS (recommended)"
+            - "Ubuntu 22.04 LTS"
 
   steps:
     - id: trigger-create
@@ -98,13 +102,13 @@ spec:
         workflowId: server-up.yaml
         branchOrTagName: main
         workflowInputs:
-          username:            ${{ parameters.username }}
-          full_name:           ${{ parameters.full_name }}
-          password:            ${{ parameters.password }}
-          region:              ${{ parameters.region }}
-          server_type:         ${{ parameters.server_type }}
-          server_name_prefix:  ${{ parameters.server_name_prefix }}
-          work_email:          ${{ parameters.work_email }}
+          username:    ${{ parameters.username }}
+          full_name:   ${{ parameters.full_name }}
+          password:    ${{ parameters.password }}
+          region:      ${{ parameters.region }}
+          server_type: ${{ parameters.server_type }}
+          image:       ${{ parameters.image }}
+          work_email:  ${{ parameters.work_email }}
 
   output:
     text:
@@ -112,7 +116,7 @@ spec:
         content: |
           ## Your server is being provisioned
 
-          **Server name:** `${{ parameters.server_name_prefix }}-${{ parameters.region }}-${{ parameters.username }}`
+          **Server name:** `${{ parameters.username }}-${{ parameters.server_type }}-${{ parameters.region }}`
 
           The GitHub Actions workflow is running — the server IP and SSH command will appear in the run logs and be emailed to you if you provided an address.
 
@@ -148,13 +152,30 @@ spec:
     - title: Server to Destroy
       required:
         - username
+        - server_type
         - region
-        - server_name_prefix
       properties:
         username:
           title: Admin Username
           type: string
           description: "Must exactly match what was used when the server was created"
+
+        server_type:
+          title: Server Type
+          type: string
+          default: cax11
+          enum:
+            - cax11
+            - cpx21
+            - cax21
+            - cpx31
+          enumNames:
+            - "ARM64  2vCPU / 4GB RAM (cax11)"
+            - "x86    3vCPU / 4GB RAM (cpx21)"
+            - "ARM64  4vCPU / 8GB RAM (cax21)"
+            - "x86    4vCPU / 8GB RAM (cpx31)"
+          description: "Must exactly match what was used when the server was created"
+          ui:widget: radio
 
         region:
           title: Region
@@ -172,12 +193,7 @@ spec:
             - "Falkenstein, EU (fsn1)"
             - "Ashburn, US (ash)"
             - "Hillsboro, US (hil)"
-
-        server_name_prefix:
-          title: Server Name Prefix
-          type: string
-          default: ubuntu-4gb
-          description: "Must match what was used at creation. Server: {prefix}-{region}-{username}"
+          description: "Must exactly match what was used when the server was created"
 
         work_email:
           title: Work Email (optional)
@@ -193,10 +209,10 @@ spec:
         workflowId: server-down.yaml
         branchOrTagName: main
         workflowInputs:
-          username:           ${{ parameters.username }}
-          region:             ${{ parameters.region }}
-          server_name_prefix: ${{ parameters.server_name_prefix }}
-          work_email:         ${{ parameters.work_email }}
+          username:    ${{ parameters.username }}
+          server_type: ${{ parameters.server_type }}
+          region:      ${{ parameters.region }}
+          work_email:  ${{ parameters.work_email }}
 
   output:
     text:
@@ -204,7 +220,7 @@ spec:
         content: |
           ## Server destruction in progress
 
-          **Server:** `${{ parameters.server_name_prefix }}-${{ parameters.region }}-${{ parameters.username }}`
+          **Server:** `${{ parameters.username }}-${{ parameters.server_type }}-${{ parameters.region }}`
 
           The GitHub Actions workflow will destroy all resources and stop billing.
           A confirmation email will be sent if you provided an address.

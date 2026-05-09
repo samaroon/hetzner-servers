@@ -7,16 +7,16 @@ on:
         description: "Admin username (must match what was used at creation)"
         required: true
         type: string
+      server_type:
+        description: "Server type (must match what was used at creation)"
+        required: true
+        type: string
+        default: cax11
       region:
-        description: "Region the server was created in"
+        description: "Region the server was created in (must match what was used at creation)"
         required: true
         type: string
         default: hel1
-      server_name_prefix:
-        description: "Server name prefix (must match what was used at creation)"
-        required: true
-        type: string
-        default: ubuntu-4gb
       work_email:
         description: "Requester work email — confirmation will be sent here"
         required: false
@@ -28,25 +28,24 @@ jobs:
     runs-on: ubuntu-latest
 
     env:
-      TF_VAR_hcloud_token:        ${{ secrets.HCLOUD_TOKEN }}
-      TF_VAR_ssh_public_key:      ${{ secrets.SSH_PUBLIC_KEY }}
-      TF_VAR_username:            ${{ inputs.username }}
-      TF_VAR_full_name:           "unused"
-      TF_VAR_password:            "unused"
-      TF_VAR_region:              ${{ inputs.region }}
-      TF_VAR_server_name_prefix:  ${{ inputs.server_name_prefix }}
-      TF_VAR_image:               "ubuntu-24.04"
+      TF_VAR_hcloud_token:    ${{ secrets.HCLOUD_TOKEN }}
+      TF_VAR_ssh_public_key:  ${{ secrets.SSH_PUBLIC_KEY }}
+      TF_VAR_username:        ${{ inputs.username }}
+      TF_VAR_region:          ${{ inputs.region }}
+      TF_VAR_server_type:     ${{ inputs.server_type }}
 
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout
+        uses: actions/checkout@v6.0.2
 
-      - uses: hashicorp/setup-terraform@v3
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v4.0.0
 
       - name: Write Backend Config
         run: |
           cat > backend.hcl << 'EOF'
           bucket     = "${{ secrets.TF_STATE_BUCKET }}"
-          key        = "hetzner-servers/${{ inputs.server_name_prefix }}-${{ inputs.region }}-${{ inputs.username }}/terraform.tfstate"
+          key        = "servers/${{ inputs.username }}-${{ inputs.server_type }}-${{ inputs.region }}/terraform.tfstate"
           region     = "${{ secrets.TF_STATE_REGION }}"
           access_key = "${{ secrets.HZ_S3_ACCESS_KEY }}"
           secret_key = "${{ secrets.HZ_S3_SECRET_KEY }}"
@@ -68,9 +67,9 @@ jobs:
           RESOURCES=$(terraform state list 2>/dev/null | wc -l)
           if [ "$RESOURCES" -eq 0 ]; then
             echo "ERROR: No resources found in state for:"
-            echo "  server_name_prefix: ${{ inputs.server_name_prefix }}"
-            echo "  region:             ${{ inputs.region }}"
-            echo "  username:           ${{ inputs.username }}"
+            echo "  username:    ${{ inputs.username }}"
+            echo "  server_type: ${{ inputs.server_type }}"
+            echo "  region:      ${{ inputs.region }}"
             echo ""
             echo "Either the server was already destroyed or the inputs don't match creation."
             exit 1
@@ -90,7 +89,7 @@ jobs:
         run: |
           EMAIL="${{ inputs.work_email }}"
           USERNAME="${{ inputs.username }}"
-          SERVER_NAME="${{ inputs.server_name_prefix }}-${{ inputs.region }}-${{ inputs.username }}"
+          SERVER_NAME="${{ inputs.username }}-${{ inputs.server_type }}-${{ inputs.region }}"
           FIRST_NAME=$(echo "$EMAIL" | cut -d@ -f1 | cut -d. -f1 | sed 's/./\u&/')
           TEAM_NAME="${NOTIFY_FROM_NAME:-DevOps}"
 

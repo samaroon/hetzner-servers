@@ -15,12 +15,6 @@ variable "server_type" {
   default     = "cax11"
 }
 
-variable "server_name_prefix" {
-  description = "Prefix for the server and SSH key name. Full name: {prefix}-{region}-{username}"
-  type        = string
-  default     = "ubuntu-4gb"
-}
-
 variable "image" {
   description = "OS image for the server"
   type        = string
@@ -47,7 +41,7 @@ variable "full_name" {
 }
 
 variable "password" {
-  description = "Password for the admin user — set via TF_VAR_password or terraform.tfvars"
+  description = "Password for the admin user. Not required during destroy."
   type        = string
   sensitive   = true
 }

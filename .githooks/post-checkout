@@ -1,0 +1,53 @@
+#!/usr/bin/env bash
+# .githooks/post-checkout
+#
+# Runs automatically after `git checkout` once hooks are activated.
+# Replaces YOUR_GITHUB_ORG / YOUR_REPO_NAME in backstage/template.yaml
+# with values derived from the git remote URL, then removes itself.
+#
+# Activate once after cloning:
+#   git config core.hooksPath .githooks
+
+set -euo pipefail
+
+TEMPLATE_FILE="backstage/template.yaml"
+
+# Only run if placeholders still exist
+if ! grep -q "YOUR_GITHUB_ORG" "$TEMPLATE_FILE" 2>/dev/null; then
+  exit 0
+fi
+
+echo "[template-setup] Placeholder detected in ${TEMPLATE_FILE} — running setup..."
+
+# Derive owner and repo from the git remote URL
+# Supports both HTTPS (https://github.com/owner/repo.git)
+# and SSH     (git@github.com:owner/repo.git)
+REMOTE_URL=$(git remote get-url origin 2>/dev/null || echo "")
+
+if [[ -z "$REMOTE_URL" ]]; then
+  echo "[template-setup] No remote 'origin' found — skipping. Set it with:"
+  echo "  git remote add origin https://github.com/YOUR_ORG/YOUR_REPO.git"
+  exit 0
+fi
+
+if [[ "$REMOTE_URL" =~ github\.com[:/]([^/]+)/([^/.]+)(\.git)?$ ]]; then
+  OWNER="${BASH_REMATCH[1]}"
+  REPO="${BASH_REMATCH[2]}"
+else
+  echo "[template-setup] Could not parse GitHub owner/repo from remote: ${REMOTE_URL}"
+  exit 0
+fi
+
+echo "[template-setup] Configuring for ${OWNER}/${REPO}..."
+
+# perl -i is portable across macOS and Linux (unlike sed -i)
+perl -i -pe "s/YOUR_GITHUB_ORG/${OWNER}/g" "$TEMPLATE_FILE"
+perl -i -pe "s/YOUR_REPO_NAME/${REPO}/g"   "$TEMPLATE_FILE"
+
+# Self-remove so this hook never runs again
+git rm -q --cached ".githooks/post-checkout" 2>/dev/null || true
+rm -f ".githooks/post-checkout"
+
+echo "[template-setup] Done. Commit the changes:"
+echo "  git add backstage/template.yaml"
+echo "  git commit -m 'chore: configure Backstage template for ${OWNER}/${REPO}'"
